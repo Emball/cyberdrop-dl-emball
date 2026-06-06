@@ -44,7 +44,7 @@ goto :RUN
 :INSTALL_OR_UPDATE
 echo Installing / Updating %INSTALL_NAME% from GitHub...
 pip uninstall cyberdrop-dl cyberdrop-dl-patched -qq >nul 2>&1
-uv tool install --managed-python -p ">=3.12,<3.14" --no-build --upgrade "cyberdrop-dl-patched @ git+https://github.com/%GITHUB_REPO%.git"
+uv tool install --managed-python -p ">=3.12,<3.14" --upgrade "cyberdrop-dl-patched @ git+https://github.com/%GITHUB_REPO%.git"
 if errorlevel 1 (
     echo Error: Failed to install %INSTALL_NAME%.
     pause
