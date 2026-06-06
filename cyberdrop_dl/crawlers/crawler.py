@@ -585,6 +585,24 @@ class Crawler(HTTPMixin, HLSMixin, ABC):
             self.manager.scrape_mapper.tui.files.stats.skipped += 1
             return True
 
+        # Pre-download fuzzy check: if the crawler gave us a filesize, check it
+        # against the DB before a single byte downloads.
+        if (
+            media_item.filesize
+            and self.manager.config.settings.dupe_cleanup_options.enable_fuzzy_matching
+        ):
+            match = await self.manager.database.hash.check_fuzzy_duplicate(
+                media_item.original_filename or media_item.filename,
+                media_item.filesize,
+            )
+            if match:
+                logger.info(
+                    f"Pre-download fuzzy duplicate: '{media_item.filename}' matches '{match}' "
+                    f"(size within 2MB, name \u226580% similar) — skipping before download: {media_item.url}"
+                )
+                self.manager.scrape_mapper.tui.files.stats.skipped += 1
+                return True
+
         return False
 
     @final
