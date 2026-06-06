@@ -18,6 +18,7 @@ from cyberdrop_dl.progress import LiveUI, UIOptions, is_terminal_in_portrait
 from cyberdrop_dl.progress.scraping.downloads import DownloadsPanel
 from cyberdrop_dl.progress.scraping.errors import DownloadErrorsPanel, ScrapeErrorsPanel
 from cyberdrop_dl.progress.scraping.files import FileStatsPanel
+from cyberdrop_dl.progress.scraping.dedupe import DedupePanel
 from cyberdrop_dl.progress.scraping.panel import ScrapingPanel, StatusMessage
 
 if TYPE_CHECKING:
@@ -47,6 +48,7 @@ class ScrapingUI(LiveUI):
     scrape_errors: ScrapeErrorsPanel = dataclasses.field(default_factory=ScrapeErrorsPanel)
     download_errors: DownloadErrorsPanel = dataclasses.field(default_factory=DownloadErrorsPanel)
 
+    dedupe: DedupePanel = dataclasses.field(default_factory=DedupePanel)
     scrape: ScrapingPanel = dataclasses.field(default_factory=ScrapingPanel)
     downloads: DownloadsPanel = dataclasses.field(default_factory=DownloadsPanel)
     status: StatusMessage = dataclasses.field(default_factory=StatusMessage)
@@ -104,12 +106,14 @@ class ScrapingUI(LiveUI):
             Layout(self.files, name="files"),
             Layout(self.scrape_errors, name="scrape_errors"),
             Layout(self.download_errors, name="download_errors"),
+            Layout(self.dedupe, name="dedupe"),
         )
 
         vertical.split_column(
             Layout(self.files, name="files", size=9),
             Layout(self.scrape_errors, name="scrape_errors", minimum_size=4),
             Layout(self.download_errors, name="download_errors", minimum_size=4),
+            Layout(self.dedupe, name="dedupe", minimum_size=4),
             *bottom,
         )
 
@@ -136,6 +140,7 @@ class ScrapingUI(LiveUI):
             "download_errors": self.download_errors.__json__(),
             "scraping": self.scrape.__json__(),
             "downloads": self.downloads.__json__(),
+            "dedupe": self.dedupe.__json__(),
             "status": self.status.__json__(),
         }
 
@@ -148,6 +153,7 @@ class ScrapingUI(LiveUI):
                         self.files,
                         self.scrape_errors,
                         self.download_errors,
+                        self.dedupe,
                         self.downloads,
                         self.status,
                     ):

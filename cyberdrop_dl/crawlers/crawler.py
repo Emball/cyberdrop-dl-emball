@@ -638,6 +638,7 @@ class Crawler(HTTPMixin, HLSMixin, ABC):
                         f"(size within 2MB, name \u226580% similar) — skipping: {media_item.url}"
                     )
                     self.manager.scrape_mapper.tui.files.stats.skipped += 1
+                    self.manager.scrape_mapper.tui.dedupe.record("fuzzy", media_item.filename, match)
                     return True
 
         # Header hash check: if HEAD probe (or crawler metadata) populated header_hashes,
@@ -653,6 +654,7 @@ class Crawler(HTTPMixin, HLSMixin, ABC):
                         f"skipping duplicate at crawl time: {media_item.url}"
                     )
                     self.manager.scrape_mapper.tui.files.stats.skipped += 1
+                    self.manager.scrape_mapper.tui.dedupe.record("header_hash", media_item.filename)
                     return True
 
         return False

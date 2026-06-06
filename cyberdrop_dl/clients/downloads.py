@@ -107,6 +107,7 @@ class DownloadClient:
         if not media_item.is_segment:
             if await self._check_header_hashes(media_item, resp.headers):
                 self.manager.scrape_mapper.tui.files.stats.skipped += 1
+                self.manager.scrape_mapper.tui.dedupe.record("header_hash", media_item.filename)
                 return False
 
         if not media_item.path:
@@ -155,6 +156,7 @@ class DownloadClient:
                     f"(size within 2MB, name similarity ≥80%) — skipping: {media_item.url}"
                 )
                 self.manager.scrape_mapper.tui.files.stats.skipped += 1
+                self.manager.scrape_mapper.tui.dedupe.record("fuzzy", media_item.filename, match)
                 return False
 
         if resp.status != HTTPStatus.PARTIAL_CONTENT:
@@ -279,11 +281,13 @@ class DownloadClient:
         except PartialHashMatchError:
             await aio.unlink(media_item.partial_file, missing_ok=True)
             self.manager.scrape_mapper.tui.files.stats.skipped += 1
+            self.manager.scrape_mapper.tui.dedupe.record("partial_hash", media_item.filename)
             logger.info(f"Skipped duplicate (partial hash match): {media_item.url}")
             return False
         except FingerprintMatchError as e:
             await aio.unlink(media_item.partial_file, missing_ok=True)
             self.manager.scrape_mapper.tui.files.stats.skipped += 1
+            self.manager.scrape_mapper.tui.dedupe.record("fingerprint", media_item.filename, e.matched)
             logger.info(f"Skipped duplicate (fingerprint match: {e.matched}): {media_item.url}")
             return False
 
