@@ -398,6 +398,9 @@ class DupeCleanup(SettingsGroup):
     enable_partial_hashing: bool = True
     """Hash the first 16MB mid-download to detect duplicates before wasting bandwidth.
     Partial hash is stored in the DB and checked on all future downloads regardless of filename or source URL."""
+    enable_fuzzy_matching: bool = True
+    """Skip files whose name is ≥80% similar to an already-downloaded file of the same size (within 2MB).
+    Catches HLS vs direct mux duplicates and renamed re-uploads without needing to download any bytes."""
 
 
 @Parameter(name="*")

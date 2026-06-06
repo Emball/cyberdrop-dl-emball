@@ -130,6 +130,24 @@ class DownloadClient:
                     f"partial hash check will run at 16MB: {media_item.url}"
                 )
 
+        # Fuzzy duplicate check: same content, different container/name (e.g. HLS vs direct)
+        if (
+            not media_item.is_segment
+            and media_item.filesize
+            and self.manager.config.settings.dupe_cleanup_options.enable_fuzzy_matching
+        ):
+            match = await self.manager.database.hash.check_fuzzy_duplicate(
+                media_item.original_filename or media_item.filename,
+                media_item.filesize,
+            )
+            if match:
+                logger.info(
+                    f"Fuzzy duplicate detected — '{media_item.filename}' matches '{match}' "
+                    f"(size within 2MB, name similarity ≥80%) — skipping: {media_item.url}"
+                )
+                self.manager.scrape_mapper.tui.files.stats.skipped += 1
+                return False
+
         if resp.status != HTTPStatus.PARTIAL_CONTENT:
             await aio.unlink(media_item.partial_file, missing_ok=True)
 

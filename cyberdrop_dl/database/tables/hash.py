@@ -110,7 +110,60 @@ class HashTable:
         except Exception:
             logger.exception("Error updating partial hash for '%s'", file)
 
-    async def get_file_hash_exists(self, path: Path | str, hash_type: str) -> str | None:
+    async def get_files_within_size_range(self, file_size: int, tolerance_bytes: int = 2 * 1024 * 1024) -> list[aiosqlite.Row]:
+        """Returns all completed files whose size is within tolerance_bytes of file_size."""
+        query = """
+        SELECT files.folder, files.download_filename, files.original_filename, files.file_size
+        FROM files
+        JOIN media ON files.folder = media.download_path AND files.download_filename = media.download_filename
+        WHERE media.completed = 1
+          AND files.file_size BETWEEN ? AND ?
+        """
+        low = file_size - tolerance_bytes
+        high = file_size + tolerance_bytes
+        try:
+            cursor = await self.db_conn.execute(query, (low, high))
+            return cast("list[aiosqlite.Row]", await cursor.fetchall())
+        except Exception:
+            logger.exception("Error querying files by size range")
+            return []
+
+    async def check_fuzzy_duplicate(
+        self,
+        filename: str,
+        file_size: int,
+        size_tolerance_bytes: int = 2 * 1024 * 1024,
+        name_similarity_threshold: float = 0.80,
+    ) -> str | None:
+        """Check if a file is a fuzzy duplicate of something already downloaded.
+
+        Matches on file size within tolerance AND filename similarity above threshold.
+        Returns the matching filename if a duplicate is found, None otherwise.
+        """
+        if self._database.ignore_history:
+            return None
+
+        candidates = await self.get_files_within_size_range(file_size, size_tolerance_bytes)
+        if not candidates:
+            return None
+
+        from difflib import SequenceMatcher
+        from pathlib import Path
+
+        incoming_stem = _normalize_stem(Path(filename).stem)
+
+        for row in candidates:
+            candidate_name = row["original_filename"] or row["download_filename"]
+            candidate_stem = _normalize_stem(Path(candidate_name).stem)
+            ratio = SequenceMatcher(None, incoming_stem, candidate_stem).ratio()
+            if ratio >= name_similarity_threshold:
+                logger.debug(
+                    f"Fuzzy duplicate: '{filename}' ~ '{candidate_name}' "
+                    f"(name similarity: {ratio:.2%}, size delta: {abs(file_size - row['file_size'])} bytes)"
+                )
+                return candidate_name
+
+        return None
         """gets the hash from a complete file path
 
         Args:
@@ -275,3 +328,21 @@ class HashTable:
         except Exception:
             logger.exception("Error retrieving folder and filename")
             return []
+
+
+def _normalize_stem(stem: str) -> str:
+    """Normalize a filename stem for fuzzy comparison.
+
+    Lowercases, strips punctuation/special chars, collapses whitespace.
+    'TEDDY-CHAN HAS A CHRISTMAS GIFT FOR YOU¡ - INDIGO WHITE - 1080p'
+    -> 'teddy chan has a christmas gift for you indigo white 1080p'
+    """
+    import re
+    stem = stem.lower()
+    # Strip resolution/quality suffixes that differ between HLS and direct
+    stem = re.sub(r'\b(hls|hls_\w+|\d+p)\b', '', stem)
+    # Replace punctuation and special chars with space
+    stem = re.sub(r'[^\w\s]', ' ', stem)
+    # Collapse whitespace
+    stem = re.sub(r'\s+', ' ', stem).strip()
+    return stem
