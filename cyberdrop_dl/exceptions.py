@@ -184,6 +184,15 @@ class PartialHashMatchError(CDLBaseError):
         super().__init__(ui_failure, message=msg, origin=origin)
 
 
+class FingerprintMatchError(CDLBaseError):
+    """Raised mid-stream when perceptual frame hashes match a known file — re-encode/remux duplicate."""
+    def __init__(self, origin: MediaItem, matched: str) -> None:
+        self.matched = matched
+        ui_failure = "Duplicate (Fingerprint Match)"
+        msg = f"File is a perceptual duplicate of '{matched}'"
+        super().__init__(ui_failure, message=msg, origin=origin)
+
+
 class RestrictedFiletypeError(SkipDownloadError):
     def __init__(self, origin: MediaItem) -> None:
         """This error will be thrown when has a filetype not allowed by config."""

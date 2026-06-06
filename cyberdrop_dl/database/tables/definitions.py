@@ -95,3 +95,18 @@ CREATE INDEX IF NOT EXISTS idx_media_domain_referer_completed
     ON media (domain, referer, completed);
 
 """
+
+create_video_fingerprint = """
+CREATE TABLE IF NOT EXISTS video_fingerprint (
+  folder TEXT,
+  download_filename TEXT,
+  frame_pct REAL,
+  phash TEXT NOT NULL,
+  PRIMARY KEY (folder, download_filename, frame_pct),
+  FOREIGN KEY (folder, download_filename) REFERENCES files(folder, download_filename)
+);
+"""
+
+create_video_fingerprint_index = """
+CREATE INDEX IF NOT EXISTS idx_vfp_phash ON video_fingerprint (phash);
+"""

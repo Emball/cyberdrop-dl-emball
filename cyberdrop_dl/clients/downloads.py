@@ -7,10 +7,10 @@ import time
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any, final
 
-from cyberdrop_dl import aio, constants, ffmpeg, storage
+from cyberdrop_dl import aio, constants, ffmpeg, fingerprint as fp_module, storage
 from cyberdrop_dl.clients import etag, hash_headers
 from cyberdrop_dl.constants import FileExt, PARTIAL_HASH_SIZE
-from cyberdrop_dl.exceptions import DownloadError, InvalidContentTypeError, SlowDownloadError, PartialHashMatchError
+from cyberdrop_dl.exceptions import DownloadError, FingerprintMatchError, InvalidContentTypeError, SlowDownloadError, PartialHashMatchError
 from cyberdrop_dl.utils import dates
 
 if TYPE_CHECKING:
@@ -237,6 +237,21 @@ class DownloadClient:
                         # Not a dupe — store partial hash for future sessions
                         media_item.partial_hash = partial_hash_value
 
+                        # Fingerprint check on partial file — catches re-encodes/remuxes
+                        if (
+                            self.manager.config.settings.dupe_cleanup_options.enable_video_fingerprinting
+                            and ffmpeg.is_installed()
+                        ):
+                            fp_match = await fp_module.check_fingerprint_duplicate(
+                                self.manager, media_item.partial_file
+                            )
+                            if fp_match:
+                                logger.info(
+                                    f"Fingerprint match on partial file — "
+                                    f"aborting duplicate: {media_item.url} matches {fp_match}"
+                                )
+                                raise FingerprintMatchError(origin=media_item, matched=fp_match)
+
         await self._post_download_check(media_item)
 
     @aio.to_thread
@@ -265,6 +280,11 @@ class DownloadClient:
             await aio.unlink(media_item.partial_file, missing_ok=True)
             self.manager.scrape_mapper.tui.files.stats.skipped += 1
             logger.info(f"Skipped duplicate (partial hash match): {media_item.url}")
+            return False
+        except FingerprintMatchError as e:
+            await aio.unlink(media_item.partial_file, missing_ok=True)
+            self.manager.scrape_mapper.tui.files.stats.skipped += 1
+            logger.info(f"Skipped duplicate (fingerprint match: {e.matched}): {media_item.url}")
             return False
 
         if downloaded:

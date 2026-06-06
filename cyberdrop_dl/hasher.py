@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Final, Literal
 
 import xxhash
 
-from cyberdrop_dl import aio, stats
+from cyberdrop_dl import aio, fingerprint, stats
 from cyberdrop_dl.constants import Hashing, TempExt
 from cyberdrop_dl.progress.hashing import HashingStats, HashingUI
 
@@ -209,6 +209,13 @@ class Hasher:
             await self.manager.database.hash.update_partial_hash(
                 media_item.partial_hash, "xxh128", media_item.path
             )
+
+        # Compute and store perceptual fingerprint for video files
+        if self.config.enable_video_fingerprinting:
+            try:
+                await fingerprint.fingerprint_and_store(self.manager, media_item.path)
+            except Exception:
+                logger.exception("Fingerprinting failed for '%s'", media_item.path)
 
     async def run(self) -> FileHashes:
         with self._tui():

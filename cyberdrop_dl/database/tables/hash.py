@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from .definitions import add_partial_hash_column, create_files, create_hash, create_hash_index, create_partial_hash_index
+from .definitions import add_partial_hash_column, create_files, create_hash, create_hash_index, create_partial_hash_index, create_video_fingerprint, create_video_fingerprint_index
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -31,6 +31,8 @@ class HashTable:
             create_files,
             create_hash,
             create_hash_index,
+            create_video_fingerprint,
+            create_video_fingerprint_index,
         ):
             _ = await self.db_conn.execute(query)
 
@@ -328,6 +330,107 @@ class HashTable:
         except Exception:
             logger.exception("Error retrieving folder and filename")
             return []
+
+
+    async def insert_fingerprint_frames(self, folder: str, filename: str, frames: list[tuple[float, str]]) -> None:
+        """Store perceptual hash frames for a video file.
+
+        Args:
+            folder: absolute folder path
+            filename: download filename
+            frames: list of (frame_pct, phash_hex) pairs
+        """
+        query = """
+        INSERT INTO video_fingerprint (folder, download_filename, frame_pct, phash)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(folder, download_filename, frame_pct) DO UPDATE SET phash = excluded.phash;
+        """
+        try:
+            await self.db_conn.executemany(query, [(folder, filename, pct, ph) for pct, ph in frames])
+            await self.db_conn.commit()
+        except Exception:
+            logger.exception("Error inserting fingerprint frames for '%s/%s'", folder, filename)
+
+    async def get_fingerprint_frames(self, folder: str, filename: str) -> list[tuple[float, str]]:
+        """Retrieve stored frames for a file. Returns list of (frame_pct, phash)."""
+        query = "SELECT frame_pct, phash FROM video_fingerprint WHERE folder = ? AND download_filename = ? ORDER BY frame_pct"
+        try:
+            cursor = await self.db_conn.execute(query, (folder, filename))
+            rows = await cursor.fetchall()
+            return [(row["frame_pct"], row["phash"]) for row in rows]
+        except Exception:
+            logger.exception("Error retrieving fingerprint for '%s/%s'", folder, filename)
+            return []
+
+    async def file_has_fingerprint(self, folder: str, filename: str) -> bool:
+        """Check if we already have fingerprint frames stored for this file."""
+        query = "SELECT 1 FROM video_fingerprint WHERE folder = ? AND download_filename = ? LIMIT 1"
+        try:
+            cursor = await self.db_conn.execute(query, (folder, filename))
+            return await cursor.fetchone() is not None
+        except Exception:
+            logger.exception("Error checking fingerprint existence")
+            return False
+
+    async def find_fingerprint_matches(
+        self,
+        frames: list[tuple[float, str]],
+        hamming_threshold: int = 10,
+        min_matching_frames: int = 3,
+    ) -> str | None:
+        """Check if a set of frames matches any known file fingerprint.
+
+        For each incoming frame, find all stored frames at the same time
+        position whose pHash Hamming distance is within the threshold.
+        If min_matching_frames or more positions match the same file, it's
+        a duplicate.
+
+        Returns 'folder/filename' of the matched file, or None.
+        """
+        if self._database.ignore_history:
+            return None
+
+        if not frames:
+            return None
+
+        # Collect per-file match counts
+        from collections import Counter
+        match_counts: Counter[str] = Counter()
+
+        for frame_pct, phash_hex in frames:
+            # Fetch all stored frames at this time position
+            query = """
+            SELECT folder, download_filename, phash
+            FROM video_fingerprint
+            WHERE frame_pct = ?
+            """
+            try:
+                cursor = await self.db_conn.execute(query, (frame_pct,))
+                rows = await cursor.fetchall()
+            except Exception:
+                logger.exception("Error querying fingerprint frames at pct=%s", frame_pct)
+                continue
+
+            incoming_hash = int(phash_hex, 16)
+            for row in rows:
+                stored_hash = int(row["phash"], 16)
+                distance = bin(incoming_hash ^ stored_hash).count("1")
+                if distance <= hamming_threshold:
+                    key = f"{row['folder']}/{row['download_filename']}"
+                    match_counts[key] += 1
+
+        if not match_counts:
+            return None
+
+        best_match, count = match_counts.most_common(1)[0]
+        if count >= min_matching_frames:
+            logger.debug(
+                "Fingerprint match: %d/%d frames matched '%s'",
+                count, len(frames), best_match,
+            )
+            return best_match
+
+        return None
 
 
 def _normalize_stem(stem: str) -> str:

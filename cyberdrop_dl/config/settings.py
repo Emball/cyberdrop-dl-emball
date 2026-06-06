@@ -401,6 +401,16 @@ class DupeCleanup(SettingsGroup):
     enable_fuzzy_matching: bool = True
     """Skip files whose name is ≥80% similar to an already-downloaded file of the same size (within 2MB).
     Catches HLS vs direct mux duplicates and renamed re-uploads without needing to download any bytes."""
+    enable_video_fingerprinting: bool = True
+    """Compute perceptual frame hashes (pHash) for video files after download and store in DB.
+    Future downloads are checked against stored fingerprints — catches re-encodes, remuxes, and
+    HLS vs direct duplicates that slip through hash and fuzzy checks. Requires ffmpeg."""
+    fingerprint_hamming_threshold: int = 10
+    """Max Hamming distance (0–64) between pHash values to consider two frames a match.
+    Lower = stricter. 10 survives typical re-encode noise without false positives."""
+    fingerprint_min_matching_frames: int = 3
+    """Minimum number of frame positions that must match to call a file a duplicate.
+    Out of 5 sampled positions (10/30/50/70/90%% of duration)."""
 
 
 @Parameter(name="*")
