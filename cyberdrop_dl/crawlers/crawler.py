@@ -575,6 +575,36 @@ class Crawler(HTTPMixin, HLSMixin, ABC):
             )
         )
 
+    async def _probe_file_metadata(self, media_item: MediaItem) -> None:
+        """Fire a HEAD request to populate filesize when the crawler didn't provide it.
+
+        Falls through silently on any error (405, timeout, redirect, etc).
+        This is a best-effort fallback — mid-download checks cover the rest.
+        """
+        try:
+            async with self.manager.http_client.raw_request(
+                media_item.real_url,
+                method="HEAD",
+                headers=media_item.headers or None,
+            ) as resp:
+                if resp.status not in (200, 206):
+                    return
+
+                if content_length := resp.headers.get("Content-Length"):
+                    with contextlib.suppress(ValueError):
+                        media_item.filesize = int(content_length)
+
+                # Also grab filename from Content-Disposition if we don't have a good one
+                if not media_item.original_filename and (cd := resp.headers.get("Content-Disposition")):
+                    import re as _re
+                    if m := _re.search(r'filename\*?=["']?(?:UTF-8'')?([^"'\s;]+)', cd, _re.IGNORECASE):
+                        from urllib.parse import unquote
+                        media_item.original_filename = unquote(m.group(1).strip('\"'))
+
+        except Exception:
+            # Silently swallow — HEAD probe is best-effort only
+            logger.debug("HEAD probe failed for %s", media_item.url)
+
     async def __should_skip(self, media_item: MediaItem) -> bool:
         if await self.check_complete(media_item.url, media_item.referer):
             if media_item.album_id:
@@ -585,23 +615,23 @@ class Crawler(HTTPMixin, HLSMixin, ABC):
             self.manager.scrape_mapper.tui.files.stats.skipped += 1
             return True
 
-        # Pre-download fuzzy check: if the crawler gave us a filesize, check it
-        # against the DB before a single byte downloads.
-        if (
-            media_item.filesize
-            and self.manager.config.settings.dupe_cleanup_options.enable_fuzzy_matching
-        ):
-            match = await self.manager.database.hash.check_fuzzy_duplicate(
-                media_item.original_filename or media_item.filename,
-                media_item.filesize,
-            )
-            if match:
-                logger.info(
-                    f"Pre-download fuzzy duplicate: '{media_item.filename}' matches '{match}' "
-                    f"(size within 2MB, name \u226580% similar) — skipping before download: {media_item.url}"
+        if self.manager.config.settings.dupe_cleanup_options.enable_fuzzy_matching:
+            # Prefer filesize from crawler metadata; fall back to HEAD probe
+            if not media_item.filesize and not media_item.is_segment:
+                await self._probe_file_metadata(media_item)
+
+            if media_item.filesize:
+                match = await self.manager.database.hash.check_fuzzy_duplicate(
+                    media_item.original_filename or media_item.filename,
+                    media_item.filesize,
                 )
-                self.manager.scrape_mapper.tui.files.stats.skipped += 1
-                return True
+                if match:
+                    logger.info(
+                        f"Pre-download fuzzy duplicate: '{media_item.filename}' matches '{match}' "
+                        f"(size within 2MB, name \u226580% similar) — skipping: {media_item.url}"
+                    )
+                    self.manager.scrape_mapper.tui.files.stats.skipped += 1
+                    return True
 
         return False
 
