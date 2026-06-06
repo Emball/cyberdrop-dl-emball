@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Concatenate, Final, Literal, Pa
 from typing_extensions import TypeVar, deprecated
 
 from cyberdrop_dl import aio, env, signature
+from cyberdrop_dl.clients import hash_headers
 from cyberdrop_dl.clients.http import HTTPClient, HTTPMixin, RequestContext
 from cyberdrop_dl.constants import CDL_USER_AGENT
 from cyberdrop_dl.crawlers._hls import HLSMixin
@@ -594,13 +595,19 @@ class Crawler(HTTPMixin, HLSMixin, ABC):
                     with contextlib.suppress(ValueError):
                         media_item.filesize = int(content_length)
 
+                # Stash any hashes the server serves in headers so __should_skip
+                # can do a zero-byte DB lookup before any content is downloaded.
+                header_hashes = hash_headers.extract_hashes(resp.headers)
+                if header_hashes:
+                    media_item.header_hashes = header_hashes
+
                 # Also grab filename from Content-Disposition if we don't have a good one
                 if not media_item.original_filename and (cd := resp.headers.get("Content-Disposition")):
                     import re as _re
-                    if m := _re.search(r'filename\*?=["']?(?:UTF-8'')?([^"'\s;]+)', cd, _re.IGNORECASE):
-                        from urllib.parse import unquote
-                        media_item.original_filename = unquote(m.group(1).strip('\"'))
-
+                    import urllib.parse as _up
+                    _cd_re = _re.search(r'filename[^=]*=\s*(?:UTF-8\'\'|")?([^";\s]+)', cd, _re.IGNORECASE)
+                    if _cd_re:
+                        media_item.original_filename = _up.unquote(_cd_re.group(1).strip('"\\'))
         except Exception:
             # Silently swallow — HEAD probe is best-effort only
             logger.debug("HEAD probe failed for %s", media_item.url)
@@ -629,6 +636,21 @@ class Crawler(HTTPMixin, HLSMixin, ABC):
                     logger.info(
                         f"Pre-download fuzzy duplicate: '{media_item.filename}' matches '{match}' "
                         f"(size within 2MB, name \u226580% similar) — skipping: {media_item.url}"
+                    )
+                    self.manager.scrape_mapper.tui.files.stats.skipped += 1
+                    return True
+
+        # Header hash check: if HEAD probe (or crawler metadata) populated header_hashes,
+        # look each one up in the DB.  This is a zero-byte exact duplicate check.
+        if media_item.header_hashes and not self.manager.database.ignore_history:
+            for hash_type, hex_value in media_item.header_hashes:
+                if hash_type not in ("md5", "sha256", "xxh128", "sha1"):
+                    continue
+                exists = await self.manager.database.hash.check_hash_exists(hash_type, hex_value)
+                if exists:
+                    logger.info(
+                        f"Header hash match ({hash_type}:{hex_value[:16]}\u2026) — "
+                        f"skipping duplicate at crawl time: {media_item.url}"
                     )
                     self.manager.scrape_mapper.tui.files.stats.skipped += 1
                     return True

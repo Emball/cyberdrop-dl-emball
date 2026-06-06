@@ -143,6 +143,7 @@ class MediaItem:
     path: Path = None  # pyright: ignore[reportAssignmentType]
     hash: str | None = None
     partial_hash: str | None = None
+    header_hashes: list[tuple[str, str]] = field(default_factory=list)
     downloaded: bool = field(default=False)
 
     metadata: object = field(init=False, default_factory=dict)

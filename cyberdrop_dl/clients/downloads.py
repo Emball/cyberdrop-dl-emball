@@ -8,7 +8,7 @@ from http import HTTPStatus
 from typing import TYPE_CHECKING, Any, final
 
 from cyberdrop_dl import aio, constants, ffmpeg, storage
-from cyberdrop_dl.clients import etag
+from cyberdrop_dl.clients import etag, hash_headers
 from cyberdrop_dl.constants import FileExt, PARTIAL_HASH_SIZE
 from cyberdrop_dl.exceptions import DownloadError, InvalidContentTypeError, SlowDownloadError, PartialHashMatchError
 from cyberdrop_dl.utils import dates
@@ -100,6 +100,15 @@ class DownloadClient:
             _check_content_type(content_type, media_item.ext)
 
         media_item.filesize = int(resp.headers.get("Content-Length", "0")) or None
+
+        # Hash-from-headers check (Layer 0): if the server serves a content hash in its
+        # response headers (Content-MD5, Digest, x-goog-hash, x-amz-checksum-*, ETag, etc.)
+        # we can check it against the DB immediately — zero content bytes downloaded.
+        if not media_item.is_segment:
+            if await self._check_header_hashes(media_item, resp.headers):
+                self.manager.scrape_mapper.tui.files.stats.skipped += 1
+                return False
+
         if not media_item.path:
             proceed, skip = await self.get_final_file_info(media_item, domain)
             _check_content_length(resp.headers)
@@ -321,6 +330,38 @@ class DownloadClient:
     def get_file_location(self, media_item: MediaItem) -> Path:
         download_dir = self.get_download_dir(media_item)
         return download_dir / media_item.filename
+
+    async def _check_header_hashes(self, media_item: MediaItem, headers: Mapping[str, str]) -> bool:
+        """Check response headers for a content hash and look it up in the DB.
+
+        This is Layer 0 dedup — fires as soon as we have response headers,
+        before any content bytes are read.  Works for any host that emits:
+        Content-MD5, Digest, x-goog-hash, x-amz-checksum-*, x-bz-content-sha1,
+        x-content-hash, or a bare-hex ETag.
+
+        Returns True if the file is a known duplicate (caller should skip).
+        """
+        if self.manager.database.ignore_history:
+            return False
+
+        found_hashes = hash_headers.extract_hashes(headers)
+        if not found_hashes:
+            return False
+
+        for hash_type, hex_value in found_hashes:
+            # We only store md5 / sha256 / xxh128 in our hash table right now;
+            # skip types we don't have indexed.
+            if hash_type not in ("md5", "sha256", "xxh128", "sha1"):
+                continue
+            exists = await self.manager.database.hash.check_hash_exists(hash_type, hex_value)
+            if exists:
+                logger.info(
+                    f"Header hash match ({hash_type}:{hex_value[:16]}…) — "
+                    f"skipping duplicate: {media_item.url}"
+                )
+                return True
+
+        return False
 
     async def get_final_file_info(self, media_item: MediaItem, domain: str) -> tuple[bool, bool]:  # noqa: C901, PLR0912, PLR0915
         """Complicated checker for if a file already exists, and was already downloaded."""
