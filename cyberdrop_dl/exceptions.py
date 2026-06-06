@@ -174,6 +174,16 @@ class SkipDownloadError(CDLBaseError):
     """Throw this when a download is not allowed by config options"""
 
 
+class PartialHashMatchError(CDLBaseError):
+    """Raised mid-download when the first 16MB hash matches a known file — duplicate detected."""
+
+    def __init__(self, origin: MediaItem, partial_hash: str) -> None:
+        self.partial_hash = partial_hash
+        ui_failure = "Duplicate (Partial Hash Match)"
+        msg = f"File matches known content at 16MB boundary (xxh128:{partial_hash})"
+        super().__init__(ui_failure, message=msg, origin=origin)
+
+
 class RestrictedFiletypeError(SkipDownloadError):
     def __init__(self, origin: MediaItem) -> None:
         """This error will be thrown when has a filetype not allowed by config."""

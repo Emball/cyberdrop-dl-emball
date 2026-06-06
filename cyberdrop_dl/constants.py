@@ -59,6 +59,9 @@ class HashType(StrEnum):
     xxh128 = "xxh128"
 
 
+PARTIAL_HASH_SIZE: Final[int] = 16 * 1024 * 1024  # 16MB
+
+
 class Hashing(CIStrEnum):
     OFF = auto()
     IN_PLACE = auto()

@@ -9,8 +9,8 @@ from typing import TYPE_CHECKING, Any, final
 
 from cyberdrop_dl import aio, constants, ffmpeg, storage
 from cyberdrop_dl.clients import etag
-from cyberdrop_dl.constants import FileExt
-from cyberdrop_dl.exceptions import DownloadError, InvalidContentTypeError, SlowDownloadError
+from cyberdrop_dl.constants import FileExt, PARTIAL_HASH_SIZE
+from cyberdrop_dl.exceptions import DownloadError, InvalidContentTypeError, SlowDownloadError, PartialHashMatchError
 from cyberdrop_dl.utils import dates
 
 if TYPE_CHECKING:
@@ -113,8 +113,22 @@ class DownloadClient:
                 self.manager.scrape_mapper.tui.files.stats.previously_completed += 1
                 await self.process_completed(media_item, domain)
                 await self.handle_media_item_completion(media_item, downloaded=False)
-
                 return False
+
+        # Size pre-check: if server gave us a Content-Length and we have a fully-hashed
+        # file of that exact size already, flag it as a likely duplicate immediately.
+        if (
+            not media_item.is_segment
+            and media_item.filesize
+            and self.manager.config.settings.dupe_cleanup_options.enable_partial_hashing
+            and self.manager.config.settings.dupe_cleanup_options.hashing.enabled
+        ):
+            size_collision = await self.manager.database.hash.check_size_has_known_hash(media_item.filesize)
+            if size_collision:
+                logger.debug(
+                    f"Content-Length {media_item.filesize} matches a known file size — "
+                    f"partial hash check will run at 16MB: {media_item.url}"
+                )
 
         if resp.status != HTTPStatus.PARTIAL_CONTENT:
             await aio.unlink(media_item.partial_file, missing_ok=True)
@@ -154,6 +168,19 @@ class DownloadClient:
         await check_free_space()
         await self._pre_download_check(media_item)
 
+        partial_hashing_enabled = (
+            not media_item.is_segment
+            and self.manager.config.settings.dupe_cleanup_options.enable_partial_hashing
+            and self.manager.config.settings.dupe_cleanup_options.hashing.enabled
+        )
+        partial_hash_triggered = False
+        partial_bytes_seen = 0
+        partial_hasher = None
+
+        if partial_hashing_enabled:
+            import xxhash
+            partial_hasher = xxhash.xxh128()
+
         async with aio.open(media_item.partial_file, mode="ab") as f:
             async for chunk in resp.iter_chunked(self.chunk_size):
                 n_bytes = len(chunk)
@@ -162,6 +189,26 @@ class DownloadClient:
                 await f.write(chunk)
                 hook.advance(n_bytes)
                 check_download_speed()
+
+                if partial_hasher and not partial_hash_triggered:
+                    partial_hasher.update(chunk)
+                    partial_bytes_seen += n_bytes
+
+                    if partial_bytes_seen >= PARTIAL_HASH_SIZE:
+                        partial_hash_triggered = True
+                        partial_hash_value = partial_hasher.hexdigest()
+                        is_dupe = await self.manager.database.hash.check_partial_hash_exists(
+                            partial_hash_value, "xxh128", media_item.filesize
+                        )
+                        if is_dupe:
+                            logger.info(
+                                f"Partial hash match at {partial_bytes_seen / 1024 / 1024:.1f}MB — "
+                                f"aborting duplicate download: {media_item.url}"
+                            )
+                            raise PartialHashMatchError(origin=media_item, partial_hash=partial_hash_value)
+
+                        # Not a dupe — store partial hash for future sessions
+                        media_item.partial_hash = partial_hash_value
 
         await self._post_download_check(media_item)
 
@@ -185,7 +232,13 @@ class DownloadClient:
             await self.process_completed(media_item, domain)
             return False
 
-        downloaded = await self._download(domain, media_item)
+        try:
+            downloaded = await self._download(domain, media_item)
+        except PartialHashMatchError:
+            await aio.unlink(media_item.partial_file, missing_ok=True)
+            self.manager.scrape_mapper.tui.files.stats.skipped += 1
+            logger.info(f"Skipped duplicate (partial hash match): {media_item.url}")
+            return False
 
         if downloaded:
             await aio.move(media_item.partial_file, media_item.path)

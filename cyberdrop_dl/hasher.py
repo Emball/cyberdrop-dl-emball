@@ -204,6 +204,12 @@ class Hasher:
         self.hashes_dict[hash_value][size].add(absolute_path)
         self._hashed_items.add(media_item.id)
 
+        # Persist the partial hash that was computed mid-download if available
+        if media_item.partial_hash:
+            await self.manager.database.hash.update_partial_hash(
+                media_item.partial_hash, "xxh128", media_item.path
+            )
+
     async def run(self) -> FileHashes:
         with self._tui():
             return await self._get_file_hashes_dict()

@@ -395,6 +395,9 @@ class DupeCleanup(SettingsGroup):
     auto_dedupe: bool = True
     hashing: Hashing = Hashing.IN_PLACE
     send_deleted_to_trash: bool = True
+    enable_partial_hashing: bool = True
+    """Hash the first 16MB mid-download to detect duplicates before wasting bandwidth.
+    Partial hash is stored in the DB and checked on all future downloads regardless of filename or source URL."""
 
 
 @Parameter(name="*")

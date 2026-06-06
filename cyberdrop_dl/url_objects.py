@@ -142,6 +142,7 @@ class MediaItem:
     partial_file: Path = None  # pyright: ignore[reportAssignmentType]
     path: Path = None  # pyright: ignore[reportAssignmentType]
     hash: str | None = None
+    partial_hash: str | None = None
     downloaded: bool = field(default=False)
 
     metadata: object = field(init=False, default_factory=dict)

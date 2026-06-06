@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from .definitions import create_files, create_hash, create_hash_index
+from .definitions import add_partial_hash_column, create_files, create_hash, create_hash_index, create_partial_hash_index
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -35,6 +35,80 @@ class HashTable:
             _ = await self.db_conn.execute(query)
 
         await self.db_conn.commit()
+        await self._migrate_partial_hash_column()
+
+    async def _migrate_partial_hash_column(self) -> None:
+        """Add partial_hash column to existing hash tables that predate this feature."""
+        cursor = await self.db_conn.execute("PRAGMA table_info(hash)")
+        columns = {row["name"] for row in await cursor.fetchall()}
+        if "partial_hash" not in columns:
+            logger.info("Migrating hash table: adding partial_hash column")
+            await self.db_conn.execute(add_partial_hash_column)
+            await self.db_conn.execute(create_partial_hash_index)
+            await self.db_conn.commit()
+
+    async def check_partial_hash_exists(self, partial_hash: str, hash_type: str, file_size: int | None = None) -> bool:
+        """Check if a partial hash (first 16MB) matches any known file.
+
+        Optionally also matches on file_size for a stronger signal before bytes are even downloaded.
+        """
+        if self._database.ignore_history:
+            return False
+
+        if file_size:
+            query = """
+            SELECT 1 FROM hash
+            JOIN files ON hash.folder = files.folder AND hash.download_filename = files.download_filename
+            WHERE hash.hash_type = ? AND hash.partial_hash = ? AND files.file_size = ?
+            LIMIT 1
+            """
+            params = (hash_type, partial_hash, file_size)
+        else:
+            query = "SELECT 1 FROM hash WHERE hash_type = ? AND partial_hash = ? LIMIT 1"
+            params = (hash_type, partial_hash)
+
+        try:
+            cursor = await self.db_conn.execute(query, params)
+            return await cursor.fetchone() is not None
+        except Exception:
+            logger.exception("Error checking partial hash")
+            return False
+
+    async def check_size_has_known_hash(self, file_size: int, hash_type: str = "xxh128") -> bool:
+        """Quick pre-download check: do we have any fully-hashed file of this exact size?
+
+        This is the cheapest possible signal — no bytes downloaded yet.
+        """
+        if self._database.ignore_history:
+            return False
+
+        query = """
+        SELECT 1 FROM hash
+        JOIN files ON hash.folder = files.folder AND hash.download_filename = files.download_filename
+        WHERE files.file_size = ? AND hash.hash_type = ? AND hash.hash IS NOT NULL
+        LIMIT 1
+        """
+        try:
+            cursor = await self.db_conn.execute(query, (file_size, hash_type))
+            return await cursor.fetchone() is not None
+        except Exception:
+            logger.exception("Error checking size against known hashes")
+            return False
+
+    async def update_partial_hash(self, partial_hash: str, hash_type: str, file: Path | str) -> None:
+        """Store the partial hash (first 16MB) for a file after it's been computed."""
+        query = """
+        UPDATE hash SET partial_hash = ?
+        WHERE hash_type = ? AND folder = ? AND download_filename = ?
+        """
+        try:
+            full_path = self.cwd / file
+            folder = str(full_path.parent)
+            filename = full_path.name
+            await self.db_conn.execute(query, (partial_hash, hash_type, folder, filename))
+            await self.db_conn.commit()
+        except Exception:
+            logger.exception("Error updating partial hash for '%s'", file)
 
     async def get_file_hash_exists(self, path: Path | str, hash_type: str) -> str | None:
         """gets the hash from a complete file path
@@ -73,20 +147,23 @@ class HashTable:
         """
         if hash_type:
             query = """
-            SELECT files.folder, files.download_filename,files.date
+            SELECT files.folder, files.download_filename, files.date
             FROM hash JOIN files ON hash.folder = files.folder AND hash.download_filename = files.download_filename
-            WHERE hash.hash = ? AND files.file_size = ? AND hash.hash_type = ?;
+            WHERE hash.hash = ? AND files.file_size = ? AND hash.hash_type = ?
+            ORDER BY files.date ASC;
             """
-
+            params = (hash_value, size, hash_type)
         else:
             query = """
-            SELECT files.folder, files.download_filename FROM hash JOIN files
-            ON hash.folder = files.folder AND hash.download_filename = files.download_filename
-            WHERE hash.hash = ? AND files.file_size = ? AND hash.hash_type = ?;
+            SELECT files.folder, files.download_filename, files.date
+            FROM hash JOIN files ON hash.folder = files.folder AND hash.download_filename = files.download_filename
+            WHERE hash.hash = ? AND files.file_size = ?
+            ORDER BY files.date ASC;
             """
+            params = (hash_value, size)
 
         try:
-            cursor = await self.db_conn.execute(query, (hash_value, size, hash_type))
+            cursor = await self.db_conn.execute(query, params)
             return cast("list[aiosqlite.Row]", await cursor.fetchall())
 
         except Exception:

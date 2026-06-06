@@ -52,10 +52,18 @@ CREATE TABLE IF NOT EXISTS hash (
   download_filename TEXT,
   hash_type TEXT,
   hash TEXT,
+  partial_hash TEXT,
   PRIMARY KEY (folder, download_filename, hash_type),
   FOREIGN KEY (folder, download_filename) REFERENCES files(folder, download_filename)
 );
 
+"""
+
+add_partial_hash_column = "ALTER TABLE hash ADD COLUMN partial_hash TEXT;"
+
+create_partial_hash_index = """
+CREATE INDEX IF NOT EXISTS idx_hash_partial ON hash (hash_type, partial_hash)
+WHERE partial_hash IS NOT NULL;
 """
 
 create_temp_hash = """
